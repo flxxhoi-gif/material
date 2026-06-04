@@ -799,45 +799,77 @@ function clearWA(){
   waRows=[];
 }
 
-async function parseWA(){
-  const text=document.getElementById('wa-text').value.trim();
-  if(!text){toast('Please type or paste a message first.','err');return;}
-  const btn=document.getElementById('parse-btn');
-  btn.disabled=true;
-  btn.innerHTML='<span class="spinner"></span> Parsing…';
-  document.getElementById('wa-preview-area').innerHTML='<div class="parse-loading"><div class="spinner"></div>AI is reading your message…</div>';
+function parseWA() {
+  const text = document.getElementById('wa-text').value.trim();
 
-  const items=getItems();
-  const itemList=items.length
-    ? items.map(i=>`ID:${i.id} | "${i.description||i.name}" | ${i.unit} | stock:${i.stock}`).join('\n')
-    : '(no items in system yet)';
+  if (!text) {
+    toast('Please type or paste a message first.', 'err');
+    return;
+  }
 
-  const prompt=`You are a stock management AI for a steel fabrication/manufacturing company in Malaysia.
+  waRows = [];
 
-A production team member sent this message (may be English, Malay, or a mix):
-"""
-${text}
-"""
+  // split message into lines
+  const lines = text
+    .split(/[\n,]+/)
+    .map(x => x.trim())
+    .filter(Boolean);
 
-Current materials in our system:
-${itemList}
+  const items = getItems();
 
-Instructions:
-1. Extract every stock movement mentioned.
-2. Determine if each is "in" (received/masuk/terima/dapat) or "out" (issued/used/keluar/guna/pakai).
-3. Fuzzy-match each item to the materials list (e.g. "3mm plate" → "3.0mm thk x 1340 x 2680mm", "bolt M14" → "M14 x 30mm bolts x nuts HDG").
-4. If no match, set matchedId to null — it will become a new item.
-5. Extract supplier if mentioned.
-6. If quantity unit is unclear, default to "pcs".
+  lines.forEach(line => {
+    let type = null;
 
-Return ONLY a JSON array, no markdown, no explanation:
-[{"parsedName":"text from message","matchedId":"id or null","matchedName":"name or null","type":"in or out","qty":number,"unit":"string","supplier":"string or null","confidence":"high/medium/low","note":"brief reason"}]`;
+    // detect IN / OUT
+    if (/received|receive|masuk|terima|dapat/i.test(line)) {
+      type = 'in';
+    }
 
-  try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:1000,messages:[{role:'user',content:prompt}]})});
-    const data=await resp.json();
-    const raw=data.content?.map(c=>c.text||'').join('').trim().replace(/```json|```/g,'').trim();
-    waRows=JSON.parse(raw);
+    if (/keluar|issued|issue|used|guna|pakai|stock out/i.test(line)) {
+      type = 'out';
+    }
+
+    if (!type) return;
+
+    // quantity
+    const qtyMatch = line.match(/(\d+(\.\d+)?)/);
+    const qty = qtyMatch ? Number(qtyMatch[1]) : 1;
+
+    // supplier
+    let supplier = '';
+    const fromMatch = line.match(/from\s+(.+)/i);
+    if (fromMatch) {
+      supplier = fromMatch[1].trim();
+    }
+
+    // clean item name
+    let parsedName = line
+      .replace(/received|receive|masuk|terima|dapat/gi, '')
+      .replace(/keluar|issued|issue|used|guna|pakai|stock out/gi, '')
+      .replace(/\d+(\.\d+)?/g, '')
+      .replace(/pcs|pc|piece|pieces|kg|bag|bags|roll|rolls/gi, '')
+      .replace(/from.+$/i, '')
+      .trim();
+
+    // simple matching
+    let matched = items.find(i =>
+      (i.description || '').toLowerCase().includes(parsedName.toLowerCase())
+    );
+
+    waRows.push({
+      parsedName,
+      matchedId: matched ? matched.id : null,
+      matchedName: matched ? matched.description : null,
+      type,
+      qty,
+      unit: matched ? matched.unit : 'pcs',
+      supplier,
+      confidence: matched ? 'high' : 'low',
+      note: matched ? 'Matched existing item' : 'New item'
+    });
+  });
+
+  
     renderWAPreview();
   }catch(e){
     document.getElementById('wa-preview-area').innerHTML=`<div class="alert a-red"><svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 8v4m0 4h.01"/></svg> Could not parse: ${e.message}. Check internet connection.</div>`;
